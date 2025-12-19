@@ -3,9 +3,8 @@ from inventory import get_trading_cards
 from badges import get_badges
 from logic import compute_surplus_cards
 from market import (
-    get_lowest_price,
-    has_three_or_more_at_lowest_price,
-    compute_sale_price
+    get_lowest_seller_and_qty,
+    compute_sale_price_from_histogram,
 )
 from config import (
     TEST_MODE,
@@ -50,7 +49,7 @@ def main():
             data["cards"]
         )
 
-        # 🔇 Rien à vendre → on ignore complètement ce jeu
+        # 🔇 Aucun surplus → on ignore le jeu
         if not surplus:
             continue
 
@@ -58,43 +57,47 @@ def main():
 
         for classid, asset_ids in surplus.items():
             card = data["cards"][classid]
+            market_name = card["market_hash_name"]
 
-            # 1️⃣ Prix le plus bas actuel
-            lowest_price = get_lowest_price(
+            # 1️⃣ Lecture du carnet d’ordres vendeur (source de vérité)
+            lowest_seller_price, qty_at_lowest = get_lowest_seller_and_qty(
                 session,
-                card["market_hash_name"]
+                market_name
             )
 
-            # 2️⃣ Récupération des offres en vente au prix le plus bas
-            has_three_or_more = has_three_or_more_at_lowest_price(
-                session,
-                card["market_hash_name"],
-                lowest_price
+            # print(
+            #     f"[DEBUG] {market_name} "
+            #     f"lowest_seller={lowest_seller_price:.2f} € "
+            #     f"qty_at_lowest={qty_at_lowest}"
+            # )
+
+            # 2️⃣ Application de la règle métier
+            final_price = compute_sale_price_from_histogram(
+                lowest_seller_price,
+                qty_at_lowest
             )
 
-            # 3️⃣ Calcul du prix final selon la règle
-            final_price = compute_sale_price(
-                lowest_price,
-                has_three_or_more
-)
+            # print(
+            #     f"[DEBUG] final_price decided: {final_price:.2f} €"
+            # )
 
-            # 4️⃣ Confirmation utilisateur si prix >= 0,10 €
+            # 3️⃣ Confirmation utilisateur si prix >= 0,10 €
             if final_price >= 0.10:
-                if not confirm_price(final_price, card["market_hash_name"]):
+                if not confirm_price(final_price, market_name):
                     print("Vente annulée par l'utilisateur.")
                     continue
 
-            # 5️⃣ Log de vente (TEST ou réel)
+            # 4️⃣ Log de vente (TEST ou réel)
             for asset_id in asset_ids:
                 if TEST_MODE:
                     print(
-                        f"[TEST] SELL {card['market_hash_name']} "
+                        f"[TEST] SELL {market_name} "
                         f"(asset {asset_id}) at {final_price:.2f} €"
                     )
                 else:
-                    # ⚠️ Vente réelle à implémenter ici plus tard
+                    # ⚠️ Vente réelle à implémenter plus tard
                     print(
-                        f"SELL {card['market_hash_name']} "
+                        f"SELL {market_name} "
                         f"(asset {asset_id}) at {final_price:.2f} €"
                     )
 

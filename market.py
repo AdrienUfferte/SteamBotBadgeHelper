@@ -1,26 +1,21 @@
+import re
 import time
+from urllib.parse import quote
+
 from config import MIN_PRICE_EUR
 
 # -------------------------------------------------------------------
-# Configuration du throttling global du market Steam
+# Throttling global du market Steam
 # -------------------------------------------------------------------
 
 _MARKET_LAST_CALL = 0.0
-MARKET_DELAY_SECONDS = 2.5  # 🔒 2.5s recommandé (3.0 si inventaire énorme)
-
-# Cache global des prix (1 appel max par item)
-_PRICE_CACHE = {}
+MARKET_DELAY_SECONDS = 2.5  # augmente à 3.0 si tu vois encore des 429
 
 
 def _throttle_market(backoff=False):
-    """
-    Garantit un délai minimum entre TOUTES les requêtes market.
-    backoff=True double le délai (utile après un 429).
-    """
     global _MARKET_LAST_CALL
 
     delay = MARKET_DELAY_SECONDS * (2 if backoff else 1)
-
     now = time.time()
     elapsed = now - _MARKET_LAST_CALL
 
@@ -31,124 +26,176 @@ def _throttle_market(backoff=False):
 
 
 # -------------------------------------------------------------------
-# Prix le plus bas actuel
+# Caches
 # -------------------------------------------------------------------
 
-def get_lowest_price(session, market_hash_name):
-    """
-    Récupère le prix le plus bas du market Steam (EUR).
-    Cache + throttling global.
-    """
+_PRICEOVERVIEW_CACHE = {}      # market_hash_name -> lowest_price (buyer) en EUR
+_ITEM_NAMEID_CACHE = {}        # market_hash_name -> item_nameid
+_HISTOGRAM_CACHE = {}          # market_hash_name -> (lowest_seller_price_eur, qty_at_lowest)
 
-    # Cache : un seul appel par item
-    if market_hash_name in _PRICE_CACHE:
-        return _PRICE_CACHE[market_hash_name]
+
+# -------------------------------------------------------------------
+# Outils parsing prix
+# -------------------------------------------------------------------
+
+def _parse_eur_price(price_str: str) -> float:
+    """
+    Convertit un prix type '0,05 €' ou '€0.05' en float 0.05
+    """
+    s = price_str.replace("€", "").replace(",", ".").strip()
+    return float(s)
+
+
+# -------------------------------------------------------------------
+# (Optionnel) priceoverview: utile pour log/affichage, mais pas fiable pour ta règle de quantité
+# -------------------------------------------------------------------
+
+def get_lowest_price_buyer(session, market_hash_name):
+    """
+    Prix le plus bas côté acheteur (priceoverview). Peut diverger du prix vendeur à cause des frais/arrondis.
+    Cache + throttling.
+    """
+    if market_hash_name in _PRICEOVERVIEW_CACHE:
+        return _PRICEOVERVIEW_CACHE[market_hash_name]
 
     _throttle_market()
 
     url = "https://steamcommunity.com/market/priceoverview/"
-    params = {
-        "currency": 3,  # EUR
-        "appid": 753,
-        "market_hash_name": market_hash_name
-    }
-
+    params = {"currency": 3, "appid": 753, "market_hash_name": market_hash_name}
     r = session.get(url, params=params)
 
     if r.status_code == 429:
-        print(f"WARNING rate limit (priceoverview) for {market_hash_name}")
         _throttle_market(backoff=True)
-        price = MIN_PRICE_EUR
-    else:
-        r.raise_for_status()
-        data = r.json()
-
-        raw_price = data.get("lowest_price")
-        if not raw_price:
-            price = MIN_PRICE_EUR
-        else:
-            price = max(
-                float(
-                    raw_price
-                    .replace("€", "")
-                    .replace(",", ".")
-                    .strip()
-                ),
-                MIN_PRICE_EUR
-            )
-
-    _PRICE_CACHE[market_hash_name] = price
-    return price
-
-
-# -------------------------------------------------------------------
-# Analyse de la concurrence (3 premières offres)
-# -------------------------------------------------------------------
-
-def has_three_or_more_at_lowest_price(session, market_hash_name, lowest_price):
-    """
-    Retourne True si les 3 premières offres visibles
-    sont au même prix que lowest_price.
-    Gère les deux formats possibles de listinginfo (dict ou list).
-    """
-
-    _throttle_market()
-
-    url = f"https://steamcommunity.com/market/listings/753/{market_hash_name}/render/"
-    params = {
-        "start": 0,
-        "count": 3,
-        "currency": 3
-    }
-
-    r = session.get(url, params=params)
-
-    if r.status_code == 429:
-        print(f"WARNING rate limit (listings) for {market_hash_name}")
-        _throttle_market(backoff=True)
-        return False
+        return MIN_PRICE_EUR
 
     r.raise_for_status()
     data = r.json()
 
-    listinginfo = data.get("listinginfo", [])
-
-    prices = []
-
-    # ✅ Cas 1 : listinginfo est un dict
-    if isinstance(listinginfo, dict):
-        iterable = listinginfo.values()
-    # ✅ Cas 2 : listinginfo est une liste
-    elif isinstance(listinginfo, list):
-        iterable = listinginfo
+    raw = data.get("lowest_price")
+    if not raw:
+        price = MIN_PRICE_EUR
     else:
-        return False
+        price = max(_parse_eur_price(raw), MIN_PRICE_EUR)
 
-    for info in iterable:
-        price_cents = info.get("price")
-        if price_cents is not None:
-            prices.append(price_cents / 100.0)
-
-    # Marché saturé si les 3 premières sont au même prix
-    return (
-        len(prices) == 3
-        and all(abs(p - lowest_price) < 0.0001 for p in prices)
-    )
-
+    _PRICEOVERVIEW_CACHE[market_hash_name] = price
+    return price
 
 
 # -------------------------------------------------------------------
-# Calcul du prix final de vente
+# Récupération item_nameid (indispensable pour itemordershistogram)
 # -------------------------------------------------------------------
 
-def compute_sale_price(lowest_price, has_three_or_more):
+def get_item_nameid(session, market_hash_name):
     """
-    Applique la règle métier :
-    - ≤ 2 offres → on garde le prix
-    - ≥ 3 offres → on baisse d'1 centime
-    - jamais < MIN_PRICE_EUR
+    Récupère l'item_nameid en scrappant la page listing (HTML).
+    Cache + throttling.
     """
-    if not has_three_or_more:
-        return lowest_price
+    if market_hash_name in _ITEM_NAMEID_CACHE:
+        return _ITEM_NAMEID_CACHE[market_hash_name]
 
-    return max(lowest_price - 0.01, MIN_PRICE_EUR)
+    _throttle_market()
+
+    encoded = quote(market_hash_name, safe="")
+    url = f"https://steamcommunity.com/market/listings/753/{encoded}"
+
+    r = session.get(url)
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        r = session.get(url)
+
+    r.raise_for_status()
+    html = r.text
+
+    # Pattern le plus courant
+    m = re.search(r"Market_LoadOrderSpread\(\s*(\d+)\s*\)", html)
+    if not m:
+        # Pattern alternatif parfois rencontré
+        m = re.search(r"item_nameid\"\s*:\s*\"?(\d+)\"?", html)
+
+    if not m:
+        raise RuntimeError(f"Impossible de trouver item_nameid pour {market_hash_name}")
+
+    item_nameid = int(m.group(1))
+    _ITEM_NAMEID_CACHE[market_hash_name] = item_nameid
+    return item_nameid
+
+
+# -------------------------------------------------------------------
+# Lecture du carnet d'ordres vendeur (ce qui correspond à ton tableau Prix/Quantité)
+# -------------------------------------------------------------------
+
+def get_lowest_seller_and_qty(session, market_hash_name, country="FR", language="french"):
+    """
+    Retourne (lowest_seller_price_eur, qty_at_lowest) à partir de itemordershistogram.
+    Cache + throttling.
+    """
+    if market_hash_name in _HISTOGRAM_CACHE:
+        return _HISTOGRAM_CACHE[market_hash_name]
+
+    item_nameid = get_item_nameid(session, market_hash_name)
+
+    _throttle_market()
+
+    url = "https://steamcommunity.com/market/itemordershistogram"
+    params = {
+        "country": country,
+        "language": language,
+        "currency": 3,          # EUR
+        "item_nameid": item_nameid,
+        "two_step": 1
+    }
+
+    r = session.get(url, params=params)
+
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        r = session.get(url, params=params)
+
+    if r.status_code == 429:
+        # On abandonne proprement: on ne veut pas crasher le run
+        result = (MIN_PRICE_EUR, 999999)
+        _HISTOGRAM_CACHE[market_hash_name] = result
+        return result
+
+    r.raise_for_status()
+    data = r.json()
+
+    # sell_order_graph: liste de points [price, quantity, ...]
+    graph = data.get("sell_order_graph") or []
+    # print(
+    #     f"[DEBUG] HISTOGRAM {market_hash_name} "
+    #     f"(country={country}, currency=EUR)"
+    # )
+
+    # for price, qty, *_ in graph[:5]:
+    #     print(f"[DEBUG]   SELL {price:.2f} € -> qty {int(qty)}")
+    if not graph:
+        # Aucun ordre vendeur visible (rare), on retombe sur min
+        result = (MIN_PRICE_EUR, 0)
+        _HISTOGRAM_CACHE[market_hash_name] = result
+        return result
+
+    lowest_price = float(graph[0][0])
+    qty_at_lowest = int(graph[0][1])
+
+    lowest_price = max(lowest_price, MIN_PRICE_EUR)
+
+    result = (lowest_price, qty_at_lowest)
+    _HISTOGRAM_CACHE[market_hash_name] = result
+    return result
+
+
+# -------------------------------------------------------------------
+# Décision de prix selon ta règle
+# -------------------------------------------------------------------
+
+def compute_sale_price_from_histogram(lowest_seller_price, qty_at_lowest):
+    """
+    Règle métier:
+    - si qty <= 2: vendre au prix mini
+    - si qty >= 3: vendre à (prix mini - 0.01), plancher MIN_PRICE_EUR
+    """
+    if qty_at_lowest <= 2:
+        return lowest_seller_price
+
+    return max(lowest_seller_price - 0.01, MIN_PRICE_EUR)
