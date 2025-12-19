@@ -5,6 +5,7 @@ from logic import compute_surplus_cards
 from market import get_lowest_price
 from config import TEST_MODE, BADGE_MAX_LEVEL, STEAM_ID
 
+
 def main():
     session = login_with_cookies()
     steam_id = STEAM_ID
@@ -12,41 +13,54 @@ def main():
     inventory = get_trading_cards(session, steam_id)
     badges = get_badges(steam_id)
 
-    print(f"{len(inventory)} jeux avec des cartes trouvés")
+    if TEST_MODE:
+        print("=== MODE TEST ===")
 
-    print("=== MODE TEST ===" if TEST_MODE else "=== MODE LIVE ===")
+    total_sales = 0
 
     for appid, data in inventory.items():
-        level = badges.get(appid, 0)
-
-        print(
-            f"\n{data['game_name']} | "
-            f"Badge {level}/{BADGE_MAX_LEVEL}"
-        )
-
-        for classid, card in data["cards"].items():
-            print(
-                f"  - {card['market_hash_name']}: "
-                f"{card['quantity']} exemplaire(s)"
-            )
+        badge_level = badges.get(appid, 0)
 
         surplus = compute_surplus_cards(
-            level, BADGE_MAX_LEVEL, data["cards"]
+            badge_level,
+            BADGE_MAX_LEVEL,
+            data["cards"]
         )
 
+        # 🔇 Rien à vendre → on ignore complètement le jeu
         if not surplus:
-            print("  Aucun surplus")
             continue
+
+        # À partir d'ici : il y a AU MOINS une carte à vendre
+        print(f"\n{data['game_name']} | Badge {badge_level}/{BADGE_MAX_LEVEL}")
 
         for classid, asset_ids in surplus.items():
             card = data["cards"][classid]
-            price = get_lowest_price(session, card["market_hash_name"])
+
+            price = get_lowest_price(
+                session,
+                card["market_hash_name"]
+            )
 
             for asset_id in asset_ids:
-                print(
-                    f"[TEST] SELL {card['market_hash_name']} "
-                    f"(asset {asset_id}) at {price:.2f} €"
-                )
+                if TEST_MODE:
+                    print(
+                        f"[TEST] SELL {card['market_hash_name']} "
+                        f"(asset {asset_id}) at {price:.2f} €"
+                    )
+                else:
+                    print(
+                        f"SELL {card['market_hash_name']} "
+                        f"(asset {asset_id}) at {price:.2f} €"
+                    )
+
+                total_sales += 1
+
+    if total_sales == 0:
+        print("Aucune carte à vendre.")
+    else:
+        print(f"\nTotal cartes à vendre : {total_sales}")
+
 
 if __name__ == "__main__":
     main()
