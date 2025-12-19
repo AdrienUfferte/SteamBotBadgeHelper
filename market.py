@@ -199,3 +199,43 @@ def compute_sale_price_from_histogram(lowest_seller_price, qty_at_lowest):
         return lowest_seller_price
 
     return max(lowest_seller_price - 0.01, MIN_PRICE_EUR)
+
+def sell_item(session, assetid, price_eur):
+    """
+    Met en vente un item Steam (1 exemplaire).
+    price_eur = prix acheteur final (ex: 0.04)
+    """
+    _throttle_market()
+
+    # Steam attend un prix en centimes (acheteur)
+    price_cents = int(round(price_eur * 100))
+
+    url = "https://steamcommunity.com/market/sellitem/"
+
+    payload = {
+        "sessionid": session.cookies.get("sessionid"),
+        "appid": 753,
+        "contextid": 6,
+        "assetid": assetid,
+        "amount": 1,
+        "price": price_cents,
+    }
+
+    headers = {
+        "Referer": "https://steamcommunity.com/my/inventory",
+        "Origin": "https://steamcommunity.com",
+    }
+
+    r = session.post(url, data=payload, headers=headers)
+
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        raise RuntimeError("Rate limit lors de la vente")
+
+    r.raise_for_status()
+    data = r.json()
+
+    if not data.get("success"):
+        raise RuntimeError(f"Echec vente asset {assetid}: {data}")
+
+    return True

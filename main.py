@@ -5,6 +5,7 @@ from logic import compute_surplus_cards
 from market import (
     get_lowest_seller_and_qty,
     compute_sale_price_from_histogram,
+    sell_item,
 )
 from config import (
     TEST_MODE,
@@ -95,11 +96,17 @@ def main():
                         f"(asset {asset_id}) at {final_price:.2f} €"
                     )
                 else:
-                    # ⚠️ Vente réelle à implémenter plus tard
-                    print(
-                        f"SELL {market_name} "
-                        f"(asset {asset_id}) at {final_price:.2f} €"
-                    )
+                    try:
+                        sell_item(session, asset_id, final_price)
+                        print(
+                            f"SOLD {market_name} "
+                            f"(asset {asset_id}) at {final_price:.2f} €"
+                        )
+                    except Exception as e:
+                        print(
+                            f"ERROR selling {market_name} "
+                            f"(asset {asset_id}): {e}"
+                        )
 
                 total_sales += 1
 
