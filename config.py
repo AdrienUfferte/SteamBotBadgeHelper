@@ -1,13 +1,9 @@
-# ===== Steam credentials =====
-STEAM_API_KEY = "YOUR_API_KEY"
-STEAM_USERNAME = "YOUR_LOGIN"
-STEAM_PASSWORD = "YOUR_PASSWORD"
-STEAM_GUARD_FILE = "steam_guard.json"
+STEAM_ID = "YOUR STEAM ID"  # SteamID64 (string ou int, peu importe)
+STEAM_API_KEY = "YOUR API KEY"
 
-# ===== Behaviour =====
-TEST_MODE = True  # True = dry-run / False = ventes réelles
+TEST_MODE = True
 MIN_PRICE_EUR = 0.03
 
-# ===== Steam constants =====
-GAME_ID = 753       # Steam Community
-CURRENCY_EUR = 3
+GAME_ID = 753
+CONTEXT_ID = 6
+BADGE_MAX_LEVEL = 5

@@ -1,77 +1,52 @@
-from steam_client import connect
+from steam_auth import login_with_cookies
+from inventory import get_trading_cards
+from badges import get_badges
 from logic import compute_surplus_cards
-from market import sell_card
-from config import TEST_MODE
+from market import get_lowest_price
+from config import TEST_MODE, BADGE_MAX_LEVEL, STEAM_ID
 
 def main():
-    client = connect()
+    session = login_with_cookies()
+    steam_id = STEAM_ID
 
-    print(
-        "=== MODE TEST ==="
-        if TEST_MODE else
-        "=== MODE LIVE ==="
-    )
+    inventory = get_trading_cards(session, steam_id)
+    badges = get_badges(steam_id)
 
-    # ------------------------------------------------------------------
-    # IMPORTANT :
-    # Cette partie dépend de la façon dont vous récupérez les badges
-    # Elle est volontairement simplifiée ici
-    # ------------------------------------------------------------------
+    print(f"{len(inventory)} jeux avec des cartes trouvés")
 
-    badges = get_badges_with_cards(client)
+    print("=== MODE TEST ===" if TEST_MODE else "=== MODE LIVE ===")
 
-    for badge in badges:
+    for appid, data in inventory.items():
+        level = badges.get(appid, 0)
+
         print(
-            f"\nBadge: {badge['name']} "
-            f"({badge['level']} / {badge['max_level']})"
+            f"\n{data['game_name']} | "
+            f"Badge {level}/{BADGE_MAX_LEVEL}"
         )
 
+        for classid, card in data["cards"].items():
+            print(
+                f"  - {card['market_hash_name']}: "
+                f"{card['quantity']} exemplaire(s)"
+            )
+
         surplus = compute_surplus_cards(
-            badge_level=badge["level"],
-            badge_max_level=badge["max_level"],
-            cards_by_type=badge["cards"]
+            level, BADGE_MAX_LEVEL, data["cards"]
         )
 
         if not surplus:
-            print("  Aucun surplus à vendre")
+            print("  Aucun surplus")
             continue
 
-        for card_type, asset_ids in surplus.items():
+        for classid, asset_ids in surplus.items():
+            card = data["cards"][classid]
+            price = get_lowest_price(session, card["market_hash_name"])
+
             for asset_id in asset_ids:
-                sell_card(
-                    client,
-                    asset_id,
-                    badge["cards"][card_type]["market_hash_name"]
+                print(
+                    f"[TEST] SELL {card['market_hash_name']} "
+                    f"(asset {asset_id}) at {price:.2f} €"
                 )
-
-
-# ----------------------------------------------------------------------
-# EXEMPLE DE STRUCTURE ATTENDUE
-# (à adapter selon votre récupération réelle)
-# ----------------------------------------------------------------------
-def get_badges_with_cards(client):
-    """
-    Retour attendu :
-    [
-        {
-            "name": "Game name",
-            "level": 3,
-            "max_level": 5,
-            "cards": {
-                "card_A": {
-                    "quantity": 4,
-                    "asset_ids": ["123", "124", "125", "126"],
-                    "market_hash_name": "Trading Card A"
-                },
-                ...
-            }
-        }
-    ]
-    """
-    raise NotImplementedError(
-        "À implémenter selon votre méthode de récupération des badges"
-    )
-
 
 if __name__ == "__main__":
     main()

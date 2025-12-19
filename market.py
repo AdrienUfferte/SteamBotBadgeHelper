@@ -1,40 +1,51 @@
-from config import MIN_PRICE_EUR, GAME_ID, CURRENCY_EUR, TEST_MODE
+import time
+from config import MIN_PRICE_EUR
 
-def get_lowest_market_price(client, market_hash_name):
-    price_info = client.market.fetch_price(market_hash_name)
+# Cache global des prix
+_PRICE_CACHE = {}
 
-    if not price_info or not price_info.get("lowest_price"):
-        return MIN_PRICE_EUR
+def get_lowest_price(session, market_hash_name, delay=1.0):
+    """
+    Récupère le prix le plus bas du market Steam.
+    Utilise un cache + un délai pour éviter le rate limit.
+    """
 
-    raw_price = price_info["lowest_price"]
-    price = float(
-        raw_price
-        .replace("€", "")
-        .replace(",", ".")
-        .strip()
-    )
+    # Cache : un seul appel par item
+    if market_hash_name in _PRICE_CACHE:
+        return _PRICE_CACHE[market_hash_name]
 
-    return max(price, MIN_PRICE_EUR)
+    time.sleep(delay)  # ⏳ indispensable
 
+    url = "https://steamcommunity.com/market/priceoverview/"
+    params = {
+        "currency": 3,  # EUR
+        "appid": 753,
+        "market_hash_name": market_hash_name
+    }
 
-def sell_card(client, asset_id, market_hash_name):
-    price = get_lowest_market_price(client, market_hash_name)
+    r = session.get(url, params=params)
 
-    if TEST_MODE:
-        print(
-            f"[TEST] SELL asset_id={asset_id} "
-            f"({market_hash_name}) at {price:.2f} €"
-        )
-        return
+    # Gestion du rate limit
+    if r.status_code == 429:
+        print(f"WARNING rate limit on price for {market_hash_name}")
+        price = MIN_PRICE_EUR
+    else:
+        r.raise_for_status()
+        data = r.json()
 
-    print(
-        f"[LIVE] SELL asset_id={asset_id} "
-        f"({market_hash_name}) at {price:.2f} €"
-    )
+        raw_price = data.get("lowest_price")
+        if not raw_price:
+            price = MIN_PRICE_EUR
+        else:
+            price = max(
+                float(
+                    raw_price
+                    .replace("€", "")
+                    .replace(",", ".")
+                    .strip()
+                ),
+                MIN_PRICE_EUR
+            )
 
-    client.market.sell_item(
-        asset_id=asset_id,
-        price=price,
-        game_id=GAME_ID,
-        currency=CURRENCY_EUR
-    )
+    _PRICE_CACHE[market_hash_name] = price
+    return price
