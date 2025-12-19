@@ -20,6 +20,7 @@ from config import (
     MAX_CARD_PRICE,
     MAX_BOOSTER_PRICE
 )
+import time
 
 
 def confirm_price(price, card_name):
@@ -189,10 +190,10 @@ def main():
         else:
             # Check for booster pack buy order
             booster_names = [
-                f"{appid}-{data['game_name']} Booster Pack",
-                f"{appid}-Booster Pack {data['game_name']}",
                 f"{data['game_name']} Booster Pack",
                 f"Booster Pack {data['game_name']}",
+                f"{appid}-{data['game_name']} Booster Pack",
+                f"{appid}-Booster Pack {data['game_name']}",
             ]
 
             booster_found = False
@@ -236,8 +237,16 @@ def main():
                         if TEST_MODE:
                             print(f"[TEST] Create buy order for {market_name} x{needed} at {suggested_buy_price:.2f} €")
                         else:
-                            create_buy_order(session, market_name, suggested_buy_price, quantity=needed)
-                            print(f"Created buy order for {market_name} x{needed} at {suggested_buy_price:.2f} €")
+                            try_count = 0
+                            while True:
+                                try_count += 1
+                                try:
+                                    create_buy_order(session, market_name, suggested_buy_price, quantity=needed)
+                                    print(f"Created buy order for {market_name} x{needed} at {suggested_buy_price:.2f} €")
+                                    break
+                                except Exception as e:
+                                    print(f"Attempt {try_count} failed for {market_name}: {e}")
+                                    time.sleep(60)
                     except Exception as e:
                         print(f"Error for {market_name}: {e}")
                 continue
@@ -251,6 +260,43 @@ def main():
             try:
                 suggested_buy_price = get_highest_buy_price(session, booster_name)
 
+                if suggested_buy_price > MIN_PRICE_EUR:
+                    print(f"There are active buy orders for {booster_name} at {suggested_buy_price:.2f} €, skipping")
+                    continue
+
+                if suggested_buy_price <= MIN_PRICE_EUR:
+                    print(f"No active buy orders for {booster_name}, skipping booster")
+                    # Fall back to individual cards
+                    for classid, miss_data in missing.items():
+                        market_name = miss_data["market_hash_name"]
+                        needed = miss_data["needed"]
+
+                        if market_name in buy_orders:
+                            existing_price, existing_qty = buy_orders[market_name]
+                            print(f"  {market_name}: Already have buy order at {existing_price:.2f} € (qty {existing_qty})")
+                            continue
+
+                        try:
+                            lowest_seller_price, qty_at_lowest = get_lowest_seller_and_qty(
+                                session,
+                                market_name
+                            )
+
+                            suggested_buy_price = max(lowest_seller_price - 0.01, MIN_PRICE_EUR)
+
+                            if suggested_buy_price > MAX_CARD_PRICE:
+                                skipped_items.append(f"Card {market_name} at {suggested_buy_price:.2f} € > {MAX_CARD_PRICE:.2f} €")
+                                continue
+
+                            if TEST_MODE:
+                                print(f"[TEST] Create buy order for {market_name} x{needed} at {suggested_buy_price:.2f} €")
+                            else:
+                                create_buy_order(session, market_name, suggested_buy_price, quantity=needed)
+                                print(f"Created buy order for {market_name} x{needed} at {suggested_buy_price:.2f} €")
+                        except Exception as e:
+                            print(f"Error for {market_name}: {e}")
+                    continue
+
                 if suggested_buy_price > MAX_BOOSTER_PRICE:
                     skipped_items.append(f"Booster {booster_name} at {suggested_buy_price:.2f} € > {MAX_BOOSTER_PRICE:.2f} €")
                     continue
@@ -258,8 +304,16 @@ def main():
                 if TEST_MODE:
                     print(f"[TEST] Create buy order for {booster_name} at {suggested_buy_price:.2f} €")
                 else:
-                    create_buy_order(session, booster_name, suggested_buy_price)
-                    print(f"Created buy order for {booster_name} at {suggested_buy_price:.2f} €")
+                    try_count = 0
+                    while True:
+                        try_count += 1
+                        try:
+                            create_buy_order(session, booster_name, suggested_buy_price)
+                            print(f"Created buy order for {booster_name} at {suggested_buy_price:.2f} €")
+                            break
+                        except Exception as e:
+                            print(f"Attempt {try_count} failed for {booster_name}: {e}")
+                            time.sleep(60)
             except Exception as e:
                 print(f"Error creating buy order for {booster_name}: {e}")
                 # If fails, perhaps fall back, but for now skip

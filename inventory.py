@@ -97,12 +97,12 @@ def get_trading_cards(session, steam_id):
 
         total_cards_found += amount
 
-        print(
-            f"FOUND CARD: {desc.get('name')} "
-            f"| game={game_name} "
-            f"| appid={appid} "
-            f"| qty={amount}"
-        )
+        # print(
+        #     f"FOUND CARD: {desc.get('name')} "
+        #     f"| game={game_name} "
+        #     f"| appid={appid} "
+        #     f"| qty={amount}"
+        # )
 
     print(f"DEBUG inventory result: {len(cards_by_app)} games detected")
     print(f"DEBUG total cards found: {total_cards_found}")

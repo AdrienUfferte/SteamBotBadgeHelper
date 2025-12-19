@@ -376,7 +376,7 @@ def create_buy_order(session, market_hash_name, price_eur, quantity=1):
     r.raise_for_status()
     data = r.json()
 
-    if not data.get("success"):
-        raise RuntimeError(f"Echec création ordre d'achat pour {market_hash_name}: {data}")
-
+    if data.get("success") != 1:
+        raise RuntimeError(f"Echec création ordre d'achat pour {market_hash_name}: {data}\n")
+    print(f"Steam buy order response: {data}")
     return data
