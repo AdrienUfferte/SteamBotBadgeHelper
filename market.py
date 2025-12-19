@@ -185,6 +185,46 @@ def get_lowest_seller_and_qty(session, market_hash_name, country="FR", language=
     return result
 
 
+def get_highest_buy_price(session, market_hash_name):
+    """
+    Retourne le prix d'achat le plus élevé depuis buy_order_graph.
+    """
+    item_nameid = get_item_nameid(session, market_hash_name)
+
+    _throttle_market()
+
+    url = "https://steamcommunity.com/market/itemordershistogram"
+    params = {
+        "country": "FR",
+        "language": "french",
+        "currency": 3,          # EUR
+        "item_nameid": item_nameid,
+        "two_step": 1
+    }
+
+    r = session.get(url, params=params)
+
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        r = session.get(url, params=params)
+
+    if r.status_code == 429:
+        return MIN_PRICE_EUR
+
+    r.raise_for_status()
+    data = r.json()
+
+    buy_graph = data.get("buy_order_graph") or []
+
+    if not buy_graph:
+        return MIN_PRICE_EUR
+
+    highest_price = float(buy_graph[0][0])
+    highest_price = max(highest_price, MIN_PRICE_EUR)
+
+    return highest_price
+
+
 # -------------------------------------------------------------------
 # Décision de prix selon ta règle
 # -------------------------------------------------------------------
@@ -239,3 +279,104 @@ def sell_item(session, assetid, price_eur):
         raise RuntimeError(f"Echec vente asset {assetid}: {data}")
 
     return True
+
+
+def get_buy_orders(session):
+    """
+    Récupère les ordres d'achat actifs depuis la page My Listings.
+    Retourne un dict market_hash_name -> (price_eur, quantity)
+    """
+    _throttle_market()
+
+    url = "https://steamcommunity.com/market/mylistings/"
+    r = session.get(url)
+
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        r = session.get(url)
+
+    r.raise_for_status()
+    html = r.text
+
+    buy_orders = {}
+
+    # Chercher les lignes d'ordres d'achat
+    # Les ordres d'achat sont dans des div avec classe "market_listing_row"
+    # et contiennent "Buy Order" dans le texte
+
+    # Utiliser regex pour trouver les ordres d'achat
+    # Pattern approximatif pour extraire les infos
+    # C'est fragile, mais pour commencer
+
+    # Trouver tous les blocs d'ordres d'achat
+    buy_order_pattern = r'<div class="market_listing_row market_recent_listing_row"[^>]*>.*?Buy Order.*?</div>'
+    matches = re.findall(buy_order_pattern, html, re.DOTALL)
+
+    for match in matches:
+        # Extraire le nom de l'item
+        name_match = re.search(r'<span class="market_listing_item_name"[^>]*>([^<]+)</span>', match)
+        if not name_match:
+            continue
+        market_hash_name = name_match.group(1).strip()
+
+        # Extraire le prix
+        price_match = re.search(r'<span class="market_listing_price[^"]*">([^<]+)</span>', match)
+        if not price_match:
+            continue
+        price_str = price_match.group(1).strip()
+        price_eur = _parse_eur_price(price_str)
+
+        # Extraire la quantité
+        qty_match = re.search(r'<span class="market_listing_buyorder_qty">(\d+)</span>', match)
+        if not qty_match:
+            continue
+        quantity = int(qty_match.group(1))
+
+        buy_orders[market_hash_name] = (price_eur, quantity)
+
+    return buy_orders
+
+
+def create_buy_order(session, market_hash_name, price_eur, quantity=1):
+    """
+    Crée un ordre d'achat pour un item.
+    price_eur = prix par unité (acheteur)
+    """
+    _throttle_market()
+
+    item_nameid = get_item_nameid(session, market_hash_name)
+
+    # Prix en centimes
+    price_cents = int(round(price_eur * 100))
+
+    url = "https://steamcommunity.com/market/createbuyorder/"
+
+    payload = {
+        "sessionid": session.cookies.get("sessionid"),
+        "currency": 3,  # EUR
+        "appid": 753,
+        "market_hash_name": market_hash_name,
+        "price_total": price_cents * quantity,
+        "quantity": quantity,
+        "billing_state": "",
+        "save_my_address": 0
+    }
+
+    headers = {
+        "Referer": f"https://steamcommunity.com/market/listings/753/{quote(market_hash_name)}",
+        "Origin": "https://steamcommunity.com",
+    }
+
+    r = session.post(url, data=payload, headers=headers)
+
+    if r.status_code == 429:
+        _throttle_market(backoff=True)
+        raise RuntimeError("Rate limit lors de la création d'ordre d'achat")
+
+    r.raise_for_status()
+    data = r.json()
+
+    if not data.get("success"):
+        raise RuntimeError(f"Echec création ordre d'achat pour {market_hash_name}: {data}")
+
+    return data

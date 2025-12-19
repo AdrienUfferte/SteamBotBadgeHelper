@@ -7,3 +7,8 @@ MIN_PRICE_EUR = 0.03
 GAME_ID = 753
 CONTEXT_ID = 6
 BADGE_MAX_LEVEL = 5
+
+SKIP_SELLING = True
+
+MAX_CARD_PRICE = 0.04  # Maximum price to buy a card
+MAX_BOOSTER_PRICE = 0.11  # Maximum price to buy a booster pack
