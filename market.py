@@ -1,5 +1,7 @@
 import re
+import requests
 import time
+import logging
 from urllib.parse import quote
 
 from config import MIN_PRICE_EUR
@@ -286,55 +288,69 @@ def get_buy_orders(session):
     Récupère les ordres d'achat actifs depuis la page My Listings.
     Retourne un dict market_hash_name -> (price_eur, quantity)
     """
-    _throttle_market()
+    for attempt in range(3):
+        try:
+            _throttle_market()
 
-    url = "https://steamcommunity.com/market/mylistings/"
-    r = session.get(url)
+            url = "https://steamcommunity.com/market/mylistings/"
+            r = session.get(url)
 
-    if r.status_code == 429:
-        _throttle_market(backoff=True)
-        r = session.get(url)
+            if r.status_code == 429:
+                _throttle_market(backoff=True)
+                r = session.get(url)
 
-    r.raise_for_status()
-    html = r.text
+            r.raise_for_status()
+            html = r.text
 
-    buy_orders = {}
+            buy_orders = {}
 
-    # Chercher les lignes d'ordres d'achat
-    # Les ordres d'achat sont dans des div avec classe "market_listing_row"
-    # et contiennent "Buy Order" dans le texte
+            # Chercher les lignes d'ordres d'achat
+            # Les ordres d'achat sont dans des div avec classe "market_listing_row"
+            # et contiennent "Buy Order" dans le texte
 
-    # Utiliser regex pour trouver les ordres d'achat
-    # Pattern approximatif pour extraire les infos
-    # C'est fragile, mais pour commencer
+            # Utiliser regex pour trouver les ordres d'achat
+            # Pattern approximatif pour extraire les infos
+            # C'est fragile, mais pour commencer
 
-    # Trouver tous les blocs d'ordres d'achat
-    buy_order_pattern = r'<div class="market_listing_row market_recent_listing_row"[^>]*>.*?Buy Order.*?</div>'
-    matches = re.findall(buy_order_pattern, html, re.DOTALL)
+            # Trouver tous les blocs d'ordres d'achat
+            buy_order_pattern = r'<div class="market_listing_row market_recent_listing_row"[^>]*>.*?Ordre d\'achat.*?</div>'
+            matches = re.findall(buy_order_pattern, html, re.DOTALL)
 
-    for match in matches:
-        # Extraire le nom de l'item
-        name_match = re.search(r'<span class="market_listing_item_name"[^>]*>([^<]+)</span>', match)
-        if not name_match:
-            continue
-        market_hash_name = name_match.group(1).strip()
+            for match in matches:
+                # Extraire le nom de l'item
+                name_match = re.search(r'<span class="market_listing_item_name"[^>]*>([^<]+)</span>', match)
+                if not name_match:
+                    continue
+                market_hash_name = name_match.group(1).strip()
 
-        # Extraire le prix
-        price_match = re.search(r'<span class="market_listing_price[^"]*">([^<]+)</span>', match)
-        if not price_match:
-            continue
-        price_str = price_match.group(1).strip()
-        price_eur = _parse_eur_price(price_str)
+                # Extraire le prix
+                price_match = re.search(r'<span class="market_listing_price[^"]*">([^<]+)</span>', match)
+                if not price_match:
+                    continue
+                price_str = price_match.group(1).strip()
+                price_eur = _parse_eur_price(price_str)
 
-        # Extraire la quantité
-        qty_match = re.search(r'<span class="market_listing_buyorder_qty">(\d+)</span>', match)
-        if not qty_match:
-            continue
-        quantity = int(qty_match.group(1))
+                # Extraire la quantité
+                qty_match = re.search(r'<span class="market_listing_buyorder_qty">(\d+)</span>', match)
+                if not qty_match:
+                    continue
+                quantity = int(qty_match.group(1))
 
-        buy_orders[market_hash_name] = (price_eur, quantity)
+                buy_orders[market_hash_name] = (price_eur, quantity)
 
-    return buy_orders
+            return buy_orders
+        except requests.exceptions.HTTPError as e:
+            if 500 <= e.response.status_code < 600:
+                logging.warning(f"{e.response.status_code} Server Error for market listings, retrying in {2**attempt} seconds... (attempt {attempt+1}/3)")
+                time.sleep(2**attempt)
+            else:
+                raise
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"Request error fetching market listings: {e}, retrying in {2**attempt} seconds... (attempt {attempt+1}/3)")
+            time.sleep(2**attempt)
+    
+    logging.error("Failed to fetch market listings after 3 attempts, returning empty dict.")
+    return {}
 
 
 def create_buy_order(session, market_hash_name, price_eur, quantity=1):
